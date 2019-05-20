@@ -1,7 +1,6 @@
 #ifndef __HORIZON_LINK_H
 #define __HORIZON_LINK_H
 
-int extract_frame(uint8_t);
-int process_frame(void);
+int receive_data(uint8_t data);
 
 #endif // __HORIZON_LINK_H
