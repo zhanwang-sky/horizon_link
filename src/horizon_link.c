@@ -1,52 +1,105 @@
-#include <stdint.h>
-#include <stdio.h>
+#include <stddef.h>
 #include "horizon_link.h"
 
+// test
+#include <stdio.h>
+
 #define NR_RX_BUFS (2)
-#define MAX_FRAME_LEN (65535)
+#define MIN_FRAME_LEN (6)
+#define MAX_FRAME_LEN (259)
 #define FRAME_MARKER (0x7E)
 #define ESCAPE_CHAR  (0x7D)
 #define ESCAPE_MASK  (0x20)
+#define CRC_VALUE    (0xFF)
 
 typedef uint8_t frame_buf[MAX_FRAME_LEN]; // typedef vector<uint8_t> frame_buf;
+
 frame_buf rx_buf[NR_RX_BUFS]; // vector<frame_buf> rx_buf;
 volatile size_t rx_buf_size[NR_RX_BUFS]; // rx_buf[i].size();
-const size_t frame_buf_max_size = MAX_FRAME_LEN; // /* frame_buf.max_size(); */
+const size_t frame_buf_max_size = MAX_FRAME_LEN; // /* frame_buf::max_size(); */
 
-volatile int isr_buf_id = 0; // decltype(rx_buf[isr_buf_id]) = frame_buf
+volatile int isr_buf_id = 0; // decltype(rx_buf[isr_buf_id]) => frame_buf
 volatile int task_buf_id = 0;
 
-int isr_frame_position = 0; // decltype(frame_buf[isr_frame_position]) = uint8_t
-
 // task
+bool validate_checksum(uint8_t *buf, uint8_t len) {
+    uint16_t checksum = 0;
+    for (uint8_t i = 0; i < len; i++) {
+        checksum += buf[i];
+    }
+    checksum = (checksum & 0xFF) + (checksum >> 8);
+    return checksum == CRC_VALUE;
+}
+
 void process_frame(void) {
-    task_buf_id = (!task_buf_id) ? 1 : 0;
+    // test
+    for (size_t i = 0; i < rx_buf_size[task_buf_id]; i++) {
+        if ((i % 0x10) == 0) {
+            printf("\n%08lX: ", i);
+        }
+        printf("%02X ", rx_buf[task_buf_id][i]);
+    }
+    printf("\n");
+
+    // validate checksum
+    if (!validate_checksum(rx_buf[task_buf_id], rx_buf_size[task_buf_id])) {
+        // test
+        printf("bad crc\n");
+    } else {
+        // test
+        printf("checksum ok\n");
+    }
+
+    // parse TLVs
+
+    task_buf_id = (task_buf_id != 0) ? 0 : 1;
+
     return;
 }
 
 // ISR
-int receive_data(uint8_t data) {
-    int notify_new_frame = 0;
+bool receive_data(uint8_t data) {
+    static int frame_position = 0;
+    static bool escaped_character = false;
+    bool new_frame_received = false;
 
-    putchar(data);
-
-    if (data == '\r') {
-        // ignore CR
-        return 0;
-    }
-
-    if (data == '\n') {
-        notify_new_frame = 1;
-    }
-
-    if (notify_new_frame) {
-        if (isr_buf_id == task_buf_id) {
-            isr_buf_id = (!isr_buf_id) ? 1 : 0;
+    if (FRAME_MARKER == data) {
+        if (frame_position < (MIN_FRAME_LEN - 1)) {
+            // Head
+            // or under size frame, treat as a new frame
+            frame_position = 1;
+            // TODO: record time
         } else {
-            // processing task is not ready
-            notify_new_frame = 0;
+            // TODO: check time
+            // Tail
+            rx_buf_size[isr_buf_id] = frame_position - 1;
+            frame_position = 0;
+            if (isr_buf_id == task_buf_id) {
+                isr_buf_id = (isr_buf_id != 0) ? 0 : 1;
+                new_frame_received = true;
+            }
         }
+        escaped_character = false;
+    } else if (frame_position > 0) {
+        if (frame_position >= (MAX_FRAME_LEN - 1)) {
+            // oversize frame
+            frame_position = 0;
+        } else {
+            if (data == ESCAPE_CHAR) {
+                // XXX 7D+7E?
+                escaped_character = true;
+            } else {
+                if (escaped_character) {
+                    data ^= ESCAPE_MASK;
+                    escaped_character = false;
+                }
+                rx_buf[isr_buf_id][frame_position - 1] = data;
+                frame_position++;
+            }
+        }
+    } else {
+        // frame header not recognized, discard
     }
 
-    return notify_new_frame;
+    return new_frame_received;
 }

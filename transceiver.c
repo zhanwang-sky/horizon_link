@@ -54,7 +54,9 @@ int main(int argc, char *argv[]) {
     while ((rx_bytes = read(rx_fd, rx_buf, sizeof(rx_buf))) > 0) {
         printf("%d bytes received\n", rx_bytes);
         for (int i = 0; i < rx_bytes; i++) {
-            receive_data(rx_buf[i]);
+            if (receive_data(rx_buf[i])) {
+                process_frame();
+            }
         }
     }
 
