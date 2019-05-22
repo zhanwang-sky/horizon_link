@@ -1,70 +1,150 @@
+/* Includes ------------------------------------------------------------------*/
 #include <stddef.h>
+#include <string.h>
 #include "horizon_link.h"
-
 // test
 #include <stdio.h>
 
-#define NR_RX_BUFS (2)
-#define MIN_FRAME_LEN (6)
-#define MAX_FRAME_LEN (259)
-#define FRAME_MARKER (0x7E)
-#define ESCAPE_CHAR  (0x7D)
-#define ESCAPE_MASK  (0x20)
-#define CRC_VALUE    (0xFF)
+/* Private definitions -------------------------------------------------------*/
+// common
+#define _HLINK_NR_RX_BUFS (2)
+// hlink frame
+#define _HLINK_MIN_TLV_LEN (2)
+#define _HLINK_MIN_FRAME_LEN (_HLINK_MIN_TLV_LEN + 3) // 7e T L CRC 7e
+#define _HLINK_MAX_FRAME_LEN (256)
+#define _HLINK_FRAME_MARKER (0x7E)
+#define _HLINK_ESCAPE_CHAR  (0x7D)
+#define _HLINK_ESCAPE_MASK  (0x20)
+#define _HLINK_CRC_VALUE    (0xFF)
+// STLVs
+#define _HLINK_STLV_FPORT_CTRL_TYPE (0x19)
+#define _HLINK_STLV_FPORT_CTRL_LEN  (26)
 
-typedef uint8_t frame_buf[MAX_FRAME_LEN]; // typedef vector<uint8_t> frame_buf;
+/* Private typedef -----------------------------------------------------------*/
+// typedef vector<uint8_t> _hlink_frame_buf_t;
+typedef uint8_t _hlink_frame_buf_t[_HLINK_MAX_FRAME_LEN];
 
-frame_buf rx_buf[NR_RX_BUFS]; // vector<frame_buf> rx_buf;
-volatile size_t rx_buf_size[NR_RX_BUFS]; // rx_buf[i].size();
-const size_t frame_buf_max_size = MAX_FRAME_LEN; // /* frame_buf::max_size(); */
+/* Private variables ---------------------------------------------------------*/
+// vector<_hlink_frame_buf_t> _hlink_rx_buf;
+static _hlink_frame_buf_t _hlink_rx_buf[_HLINK_NR_RX_BUFS];
+// _hlink_rx_buf[i].size();
+static volatile size_t _hlink_rx_buf_size[_HLINK_NR_RX_BUFS];
+// /* _hlink_frame_buf_t::max_size(); */
+static const size_t _hlink_frame_buf_t_max_size = _HLINK_MAX_FRAME_LEN;
 
-volatile int isr_buf_id = 0; // decltype(rx_buf[isr_buf_id]) => frame_buf
-volatile int task_buf_id = 0;
+// _hlink_rx_buf[_hlink_isr_buf_id]
+static volatile size_t _hlink_isr_buf_id = 0;
+// _hlink_rx_buf[_hlink_task_buf_id]
+static volatile size_t _hlink_task_buf_id = 0;
 
+// for convenience
+static hlink_tlv_set_t _hlink_tlv_set_mask;
+static int _hlink_nr_tlvs = 0;
+
+/* Functions -----------------------------------------------------------------*/
 // task
-bool validate_checksum(uint8_t *buf, uint8_t len) {
+static void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
+    sbus->channel[0] = ((buf[1] << 8) | buf[0]) & 0x7FF;
+    sbus->channel[1] = ((buf[2] << 5) | (buf[1] >> 3)) & 0x7FF;
+    sbus->channel[2] = ((buf[4] << 10) | (buf[3] << 2) | (buf[2] >> 6)) & 0x7FF;
+    sbus->channel[3] = ((buf[5] << 7) | (buf[4] >> 1)) & 0x7FF;
+    sbus->channel[4] = ((buf[6] << 4) | (buf[5] >> 4)) & 0x7FF;
+    sbus->channel[5] = ((buf[8] << 9) | (buf[7] << 1) | (buf[6] >> 7)) & 0x7FF;
+    sbus->channel[6] = ((buf[9] << 6) | (buf[8] >> 2)) & 0x7FF;
+    sbus->channel[7] = ((buf[10] << 3) | (buf[9] >> 5)) & 0x7FF;
+}
+
+static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
+    uint8_t type = buf[0];
+    size_t retval = 0;
+
+    printf("parse stlv\n");
+
+    switch (type) {
+    case _HLINK_STLV_FPORT_CTRL_TYPE:
+        if (buf[1] != 0 || frame_len < _HLINK_STLV_FPORT_CTRL_LEN) {
+            break;
+        }
+        retval = _HLINK_STLV_FPORT_CTRL_LEN;
+        if (tlv_set->fport_ctrl != NULL) {
+            // record tlv
+            _hlink_tlv_set_mask.fport_ctrl = tlv_set->fport_ctrl;
+            _hlink_nr_tlvs++;
+
+            _hlink_decode_sbus(buf + 2, tlv_set->fport_ctrl->sbus);
+            tlv_set->fport_ctrl->rssi = buf[25];
+        }
+    default:
+        break;
+    }
+
+    if (!retval) {
+        printf("no fport ctrl\n");
+    }
+
+    return retval;
+}
+
+static size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
+    printf("parse tlv\n");
+    // if (frame_len < _HLINK_MIN_TLV_LEN) { return frame_len; }
+    return frame_len;
+}
+
+static bool _hlink_validate_checksum(uint8_t *buf, size_t frame_len) {
     uint16_t checksum = 0;
-    for (uint8_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < frame_len; i++) {
         checksum += buf[i];
     }
     checksum = (checksum & 0xFF) + (checksum >> 8);
-    return checksum == CRC_VALUE;
+    return checksum == _HLINK_CRC_VALUE;
 }
 
-void process_frame(void) {
+int hlink_process_frame(hlink_tlv_set_t *tlv_set) {
+    uint8_t *buf = _hlink_rx_buf[_hlink_task_buf_id];
+    size_t frame_position = 0,
+           frame_len = _hlink_rx_buf_size[_hlink_task_buf_id];
+
+    memset(&_hlink_tlv_set_mask, 0, sizeof(_hlink_tlv_set_mask));
+    _hlink_nr_tlvs = 0;
+
     // test
-    for (size_t i = 0; i < rx_buf_size[task_buf_id]; i++) {
+    for (size_t i = 0; i < frame_len; i++) {
         if ((i % 0x10) == 0) {
             printf("\n%08lX: ", i);
         }
-        printf("%02X ", rx_buf[task_buf_id][i]);
+        printf("%02X ", buf[i]);
     }
     printf("\n");
 
     // validate checksum
-    if (!validate_checksum(rx_buf[task_buf_id], rx_buf_size[task_buf_id])) {
+    if (_hlink_validate_checksum(buf, frame_len)) {
         // test
-        printf("bad crc\n");
+        printf("crc ok\n");
+        frame_len--; // exclude crc
+        frame_position = _hlink_parse_stlv(buf, frame_len, tlv_set);
+        while (frame_position < frame_len) {
+            frame_position += _hlink_parse_tlv(buf + frame_position, frame_len - frame_position, tlv_set);
+        }
     } else {
         // test
-        printf("checksum ok\n");
+        printf("bad crc\n");
     }
 
-    // parse TLVs
+    _hlink_task_buf_id = (_hlink_task_buf_id != 0) ? 0 : 1;
 
-    task_buf_id = (task_buf_id != 0) ? 0 : 1;
-
-    return;
+    memcpy(tlv_set, &_hlink_tlv_set_mask, sizeof(_hlink_tlv_set_mask));
+    return _hlink_nr_tlvs;
 }
 
 // ISR
-bool receive_data(uint8_t data) {
-    static int frame_position = 0;
+bool hlink_receive_data(uint8_t data) {
+    static size_t frame_position = 0;
     static bool escaped_character = false;
     bool new_frame_received = false;
 
-    if (FRAME_MARKER == data) {
-        if (frame_position < (MIN_FRAME_LEN - 1)) {
+    if (_HLINK_FRAME_MARKER == data) {
+        if (frame_position < (_HLINK_MIN_FRAME_LEN - 1)) {
             // Head
             // or under size frame, treat as a new frame
             frame_position = 1;
@@ -72,28 +152,28 @@ bool receive_data(uint8_t data) {
         } else {
             // TODO: check time
             // Tail
-            rx_buf_size[isr_buf_id] = frame_position - 1;
+            _hlink_rx_buf_size[_hlink_isr_buf_id] = frame_position - 1;
             frame_position = 0;
-            if (isr_buf_id == task_buf_id) {
-                isr_buf_id = (isr_buf_id != 0) ? 0 : 1;
+            if (_hlink_isr_buf_id == _hlink_task_buf_id) {
+                _hlink_isr_buf_id = (_hlink_isr_buf_id != 0) ? 0 : 1;
                 new_frame_received = true;
             }
         }
         escaped_character = false;
     } else if (frame_position > 0) {
-        if (frame_position >= (MAX_FRAME_LEN - 1)) {
+        if (frame_position >= (_HLINK_MAX_FRAME_LEN - 1)) {
             // oversize frame
             frame_position = 0;
         } else {
-            if (data == ESCAPE_CHAR) {
+            if (data == _HLINK_ESCAPE_CHAR) {
                 // XXX 7D+7E?
                 escaped_character = true;
             } else {
                 if (escaped_character) {
-                    data ^= ESCAPE_MASK;
+                    data ^= _HLINK_ESCAPE_MASK;
                     escaped_character = false;
                 }
-                rx_buf[isr_buf_id][frame_position - 1] = data;
+                _hlink_rx_buf[_hlink_isr_buf_id][frame_position - 1] = data;
                 frame_position++;
             }
         }
