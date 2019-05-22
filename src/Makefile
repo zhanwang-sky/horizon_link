@@ -1,14 +1,19 @@
+TARGET := libhorizonlink.a
+HEADERS := horizon_link.h
+
 CC := gcc
 AR := ar
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -g
-TARGET := libhlink.a
 
 $(TARGET): horizon_link.o
 	$(AR) -rc $@ $^
 horizon_link.o: horizon_link.c horizon_link.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-.PHONY: rebuild clean all
+.PHONY: install rebuild clean all
+install:
+	cp $(TARGET) ~/.local/lib/
+	cp $(HEADERS) ~/.local/include/
 rebuild: clean all
 all: $(TARGET)
 clean:
