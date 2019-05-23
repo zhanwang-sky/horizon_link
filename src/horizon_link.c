@@ -44,6 +44,8 @@ static int _hlink_nr_tlvs = 0;
 /* Functions -----------------------------------------------------------------*/
 // task
 static void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
+    printf("decode sbus\n");
+
     sbus->channel[0] = ((buf[1] << 8) | buf[0]) & 0x7FF;
     sbus->channel[1] = ((buf[2] << 5) | (buf[1] >> 3)) & 0x7FF;
     sbus->channel[2] = ((buf[4] << 10) | (buf[3] << 2) | (buf[2] >> 6)) & 0x7FF;
@@ -52,6 +54,17 @@ static void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
     sbus->channel[5] = ((buf[8] << 9) | (buf[7] << 1) | (buf[6] >> 7)) & 0x7FF;
     sbus->channel[6] = ((buf[9] << 6) | (buf[8] >> 2)) & 0x7FF;
     sbus->channel[7] = ((buf[10] << 3) | (buf[9] >> 5)) & 0x7FF;
+
+    sbus->channel[8] = ((buf[12] << 8) | buf[11]) & 0x7FF;
+    sbus->channel[9] = ((buf[13] << 5) | (buf[12] >> 3)) & 0x7FF;
+    sbus->channel[10] = ((buf[15] << 10) | (buf[14] << 2) | (buf[13] >> 6)) & 0x7FF;
+    sbus->channel[11] = ((buf[16] << 7) | (buf[15] >> 1)) & 0x7FF;
+    sbus->channel[12] = ((buf[17] << 4) | (buf[16] >> 4)) & 0x7FF;
+    sbus->channel[13] = ((buf[19] << 9) | (buf[18] << 1) | (buf[17] >> 7)) & 0x7FF;
+    sbus->channel[14] = ((buf[20] << 6) | (buf[19] >> 2)) & 0x7FF;
+    sbus->channel[15] = ((buf[21] << 3) | (buf[20] >> 5)) & 0x7FF;
+
+    sbus->flags = buf[22];
 }
 
 static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
@@ -111,7 +124,10 @@ int hlink_process_frame(hlink_tlv_set_t *tlv_set) {
     // test
     for (size_t i = 0; i < frame_len; i++) {
         if ((i % 0x10) == 0) {
-            printf("\n%08lX: ", i);
+            if (i != 0) {
+                printf("\n");
+            }
+            printf("%08lX: ", i);
         }
         printf("%02X ", buf[i]);
     }
