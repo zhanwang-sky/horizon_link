@@ -30,7 +30,7 @@ static _hlink_frame_buf_t _hlink_rx_buf[_HLINK_NR_RX_BUFS];
 // _hlink_rx_buf[i].size();
 static volatile size_t _hlink_rx_buf_size[_HLINK_NR_RX_BUFS];
 // /* _hlink_frame_buf_t::max_size(); */
-static const size_t _hlink_frame_buf_t_max_size = _HLINK_MAX_FRAME_LEN;
+//const size_t _hlink_frame_buf_t_max_size = _HLINK_MAX_FRAME_LEN;
 
 // _hlink_rx_buf[_hlink_isr_buf_id]
 static volatile size_t _hlink_isr_buf_id = 0;
@@ -69,7 +69,7 @@ static void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
 
 static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
     uint8_t type = buf[0];
-    size_t retval = 0;
+    size_t next_tlv = 0;
 
     printf("parse stlv\n");
 
@@ -78,9 +78,8 @@ static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t 
         if (buf[1] != 0 || frame_len < _HLINK_STLV_FPORT_CTRL_LEN) {
             break;
         }
-        retval = _HLINK_STLV_FPORT_CTRL_LEN;
+        next_tlv = frame_len; // stop parsing remaining TLVs
         if (tlv_set->fport_ctrl != NULL) {
-            // record tlv
             _hlink_tlv_set_mask.fport_ctrl = tlv_set->fport_ctrl;
             _hlink_nr_tlvs++;
 
@@ -91,11 +90,7 @@ static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t 
         break;
     }
 
-    if (!retval) {
-        printf("no fport ctrl\n");
-    }
-
-    return retval;
+    return next_tlv;
 }
 
 static size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
@@ -135,8 +130,6 @@ int hlink_process_frame(hlink_tlv_set_t *tlv_set) {
 
     // validate checksum
     if (_hlink_validate_checksum(buf, frame_len)) {
-        // test
-        printf("crc ok\n");
         frame_len--; // exclude crc
         frame_position = _hlink_parse_stlv(buf, frame_len, tlv_set);
         while (frame_position < frame_len) {
