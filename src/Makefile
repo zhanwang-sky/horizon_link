@@ -4,15 +4,21 @@ HEADERS := horizon_link.h
 CC := gcc
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -g
 
-$(TARGET): horizon_link.o
-	$(CC) -shared -fPIC -o $@ $^
-horizon_link.o: horizon_link.c horizon_link.h
-	$(CC) $(CFLAGS) -c -o $@ $<
+LIB_DIR := ~/.local/lib/
+INCLUDE_DIR := ~/.local/include/
 
-.PHONY: install rebuild clean all
+$(TARGET): horizon_link.o
+	$(CC) -shared -o $@ $^
+horizon_link.o: horizon_link.c horizon_link.h
+	$(CC) $(CFLAGS) -c -fPIC -o $@ $<
+
+.PHONY: install uninstall rebuild clean all
 install:
-	cp $(TARGET) /usr/local/lib/
-	cp $(HEADERS) /usr/local/include/
+	cp $(TARGET) $(LIB_DIR)
+	cp $(HEADERS) $(INCLUDE_DIR)
+uninstall:
+	rm -f $(addprefix $(LIB_DIR), $(TARGET))
+	rm -f $(addprefix $(INCLUDE_DIR), $(HEADERS))
 rebuild: clean all
 all: $(TARGET)
 clean:
