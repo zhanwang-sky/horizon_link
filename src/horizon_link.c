@@ -18,7 +18,10 @@
 #define _HLINK_CRC_VALUE    (0xFF)
 // STLVs
 #define _HLINK_STLV_FPORT_CTRL_TYPE (0x19)
-#define _HLINK_STLV_FPORT_CTRL_LEN  (26)
+#define _HLINK_STLV_FPORT_CTRL_LEN  (24)
+// TLVs
+#define _HLINK_TLV_SBUS_TYPE (0x41)
+#define _HLINK_TLV_SBUS_LEN  (23)
 
 /* Private typedef -----------------------------------------------------------*/
 // typedef vector<uint8_t> _hlink_frame_buf_t;
@@ -29,6 +32,10 @@ typedef uint8_t _hlink_frame_buf_t[_HLINK_MAX_FRAME_LEN];
 static _hlink_frame_buf_t _hlink_rx_buf[_HLINK_NR_RX_BUFS];
 // _hlink_rx_buf[i].size();
 static volatile size_t _hlink_rx_buf_size[_HLINK_NR_RX_BUFS];
+// _hlink_frame_buf_t _hlink_tx_frame_buf;
+static _hlink_frame_buf_t _hlink_tx_frame_buf;
+// _hlink_tx_frame_buf.size();
+static size_t _hlink_tx_frame_buf_size;
 // /* _hlink_frame_buf_t::max_size(); */
 //const size_t _hlink_frame_buf_t_max_size = _HLINK_MAX_FRAME_LEN;
 
@@ -42,8 +49,25 @@ static hlink_tlv_set_t _hlink_tlv_set_mask;
 static int _hlink_nr_tlvs = 0;
 
 /* Functions -----------------------------------------------------------------*/
-// task
-static void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
+void _hlink_encode_sbus(hlink_sbus_t *sbus, uint8_t *buf) {
+    buf[0] = sbus->channel[0] & 0xFF;
+    buf[1] = ((sbus->channel[0] >> 8) & 0x07) | ((sbus->channel[1] << 3) & 0xF8);
+    buf[2] = ((sbus->channel[1] >> 5) & 0x3F) | ((sbus->channel[2] << 6) & 0xC0);
+    buf[3] = (sbus->channel[2] >> 2) & 0xFF;
+    buf[4] = ((sbus->channel[2] >> 10) & 0x01) | ((sbus->channel[3] << 1) & 0xFE);
+    buf[5] = ((sbus->channel[3] >> 7) & 0x0F) | ((sbus->channel[4] << 4) & 0xF0);
+    buf[6] = ((sbus->channel[4] >> 4) & 0x7F) | ((sbus->channel[5] << 7) & 0x80);
+    buf[7] = (sbus->channel[5] >> 1) & 0xFF;
+    buf[8] = ((sbus->channel[5] >> 9) & 0x03) | ((sbus->channel[6] << 2) & 0xFC);
+    buf[9] = ((sbus->channel[6] >> 6) & 0x1F) | ((sbus->channel[7] << 5) & 0xE0);
+    buf[10] = (sbus->channel[7] >> 3) & 0xFF;
+
+    // to be continue...
+
+    buf[22] = sbus->flags;
+}
+
+void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
     printf("decode sbus\n");
 
     sbus->channel[0] = ((buf[1] << 8) | buf[0]) & 0x7FF;
@@ -67,25 +91,26 @@ static void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
     sbus->flags = buf[22];
 }
 
-static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
-    uint8_t type = buf[0];
-    size_t next_tlv = 0;
+size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
+    uint8_t type = buf[0]; // it is guaranteed that frame_len is at least 2 bytes
+    size_t next_tlv = 0; // default value, assume that the frame doesn't contain a STLV
 
     printf("parse stlv\n");
 
     switch (type) {
     case _HLINK_STLV_FPORT_CTRL_TYPE:
-        if (buf[1] != 0 || frame_len < _HLINK_STLV_FPORT_CTRL_LEN) {
-            break;
+        if ((buf[1] == 0) && (frame_len >= _HLINK_STLV_FPORT_CTRL_LEN + 2)) {
+            next_tlv = frame_len; // mark next tlv position (stop parsing remaining data)
+            if (tlv_set->fport_ctrl != NULL) {
+                // record this STLV
+                _hlink_tlv_set_mask.fport_ctrl = tlv_set->fport_ctrl;
+                _hlink_nr_tlvs++;
+                // decode
+                _hlink_decode_sbus(buf + 2, tlv_set->fport_ctrl->sbus);
+                tlv_set->fport_ctrl->rssi = buf[25];
+            }
         }
-        next_tlv = frame_len; // stop parsing remaining TLVs
-        if (tlv_set->fport_ctrl != NULL) {
-            _hlink_tlv_set_mask.fport_ctrl = tlv_set->fport_ctrl;
-            _hlink_nr_tlvs++;
-
-            _hlink_decode_sbus(buf + 2, tlv_set->fport_ctrl->sbus);
-            tlv_set->fport_ctrl->rssi = buf[25];
-        }
+        break;
     default:
         break;
     }
@@ -93,19 +118,120 @@ static size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t 
     return next_tlv;
 }
 
-static size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
+size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
+    uint8_t type;
+    uint8_t len;
+    size_t next_tlv = frame_len;
+
     printf("parse tlv\n");
-    // if (frame_len < _HLINK_MIN_TLV_LEN) { return frame_len; }
-    return frame_len;
+
+    if (frame_len < _HLINK_MIN_TLV_LEN) {
+        return frame_len;
+    }
+
+    type = buf[0];
+    len = buf[1];
+    if (frame_len < (len + 2)) {
+        // under size
+        printf("under size\n");
+        return frame_len;
+    }
+
+    switch (type) {
+    case _HLINK_TLV_SBUS_TYPE:
+        // len is fixed
+        if (len == _HLINK_TLV_SBUS_LEN) {
+            next_tlv = len + 2; // mark next tlv position
+            if (tlv_set->sbus != NULL) {
+                // record this tlv
+                _hlink_tlv_set_mask.sbus = tlv_set->sbus;
+                _hlink_nr_tlvs++;
+                // decode
+                _hlink_decode_sbus(buf + 2, tlv_set->sbus);
+            }
+        }
+        break;
+    default:
+        break;
+    }
+
+    return next_tlv;
 }
 
-static bool _hlink_validate_checksum(uint8_t *buf, size_t frame_len) {
+uint8_t _hlink_compute_checksum(uint8_t *buf, size_t len) {
+    uint16_t checksum = 0;
+    for (size_t i = 0; i < len; i++) {
+        checksum += buf[i];
+    }
+    checksum = (checksum & 0xFF) + (checksum >> 8);
+    return (0xFF - checksum);
+}
+
+bool _hlink_validate_checksum(uint8_t *buf, size_t frame_len) {
     uint16_t checksum = 0;
     for (size_t i = 0; i < frame_len; i++) {
         checksum += buf[i];
     }
     checksum = (checksum & 0xFF) + (checksum >> 8);
-    return checksum == _HLINK_CRC_VALUE;
+    return (checksum == _HLINK_CRC_VALUE);
+}
+
+int hlink_prepare_frame(hlink_tlv_set_t *tlv_set) {
+    hlink_tlv_set_t tlv_set_mask;
+    int nr_tlvs = 0;
+    size_t frame_position = 0;
+
+    memset(&tlv_set_mask, 0, sizeof(tlv_set_mask));
+
+    if ((tlv_set->sbus != NULL)
+        && ((_HLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + _HLINK_TLV_SBUS_LEN))) {
+        tlv_set_mask.sbus = tlv_set->sbus;
+        nr_tlvs++;
+        // encode sbus TLV
+        _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_SBUS_TYPE;
+        _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_SBUS_LEN;
+        _hlink_encode_sbus(tlv_set->sbus, _hlink_tx_frame_buf + frame_position);
+        frame_position += _HLINK_TLV_SBUS_LEN;
+    }
+
+    if (nr_tlvs > 0) {
+        _hlink_tx_frame_buf[frame_position] = _hlink_compute_checksum(_hlink_tx_frame_buf, frame_position);
+        frame_position++;
+        _hlink_tx_frame_buf_size = frame_position;
+    }
+
+    memcpy(tlv_set, &tlv_set_mask, sizeof(tlv_set_mask));
+    return nr_tlvs;
+}
+
+size_t hlink_prepare_tx_buf(uint8_t *buf, size_t buf_len) {
+    size_t si = 0, di = 0;
+
+    if (buf_len < (_hlink_tx_frame_buf_size + 2)) {
+        return 0;
+    }
+
+    buf[di++] = _HLINK_FRAME_MARKER;
+
+    for (; si < _hlink_tx_frame_buf_size; si++) {
+        if ((_hlink_tx_frame_buf[si] == _HLINK_FRAME_MARKER)
+            || (_hlink_tx_frame_buf[si] == _HLINK_ESCAPE_CHAR)) {
+            if ((di + 2) >= buf_len) {
+                return 0;
+            }
+            buf[di++] = _HLINK_ESCAPE_CHAR;
+            buf[di++] = _hlink_tx_frame_buf[si] ^ _HLINK_ESCAPE_MASK;
+        } else {
+            if ((di + 1) >= buf_len) {
+                return 0;
+            }
+            buf[di++] = _hlink_tx_frame_buf[si];
+        }
+    }
+
+    buf[di++] = _HLINK_FRAME_MARKER;
+
+    return di;
 }
 
 int hlink_process_frame(hlink_tlv_set_t *tlv_set) {
@@ -150,11 +276,7 @@ int hlink_process_frame(hlink_tlv_set_t *tlv_set) {
 bool hlink_receive_data(uint8_t data) {
     static size_t frame_position = 0;
     static bool escaped_character = false;
-    bool new_frame_received = false;
-
-    if (_HLINK_FRAME_MARKER == data) {
-        if (frame_position < (_HLINK_MIN_FRAME_LEN - 1)) {
-            // Head
+    bool new_frame_received = false; if (_HLINK_FRAME_MARKER == data) { if (frame_position < (_HLINK_MIN_FRAME_LEN - 1)) { // Head
             // or under size frame, treat as a new frame
             frame_position = 1;
             // TODO: record time

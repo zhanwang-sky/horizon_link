@@ -23,8 +23,12 @@ typedef struct {
     hlink_sbus_t *sbus;
 } hlink_tlv_set_t;
 
-bool hlink_receive_data(uint8_t data);
-int hlink_process_frame(hlink_tlv_set_t *tlv_set);
+// sending
+int hlink_prepare_frame(hlink_tlv_set_t*);
+size_t hlink_prepare_tx_buf(uint8_t*, size_t);
+// receiving
+bool hlink_receive_data(uint8_t);
+int hlink_process_frame(hlink_tlv_set_t*);
 
 #ifdef __cplusplus
 }
