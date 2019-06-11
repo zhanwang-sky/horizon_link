@@ -1,11 +1,11 @@
-/* Includes ------------------------------------------------------------------*/
+/* Includes -------------------------------------------------------------------*/
 #include <stddef.h>
 #include <string.h>
 #include "horizon_link.h"
 // test
 #include <stdio.h>
 
-/* Private definitions -------------------------------------------------------*/
+/* Private definitions --------------------------------------------------------*/
 // common
 #define _HLINK_NR_RX_BUFS (2)
 // hlink frame
@@ -23,11 +23,11 @@
 #define _HLINK_TLV_SBUS_TYPE (0x41)
 #define _HLINK_TLV_SBUS_LEN  (23)
 
-/* Private typedef -----------------------------------------------------------*/
+/* Private typedef ------------------------------------------------------------*/
 // typedef vector<uint8_t> _hlink_frame_buf_t;
 typedef uint8_t _hlink_frame_buf_t[_HLINK_MAX_FRAME_LEN];
 
-/* Private variables ---------------------------------------------------------*/
+/* Private variables ----------------------------------------------------------*/
 // vector<_hlink_frame_buf_t> _hlink_rx_buf;
 static _hlink_frame_buf_t _hlink_rx_buf[_HLINK_NR_RX_BUFS];
 // _hlink_rx_buf[i].size();
@@ -48,45 +48,46 @@ static volatile size_t _hlink_task_buf_id = 0;
 static hlink_tlv_set_t _hlink_tlv_set_mask;
 static int _hlink_nr_tlvs = 0;
 
-/* Functions -----------------------------------------------------------------*/
+/* Private functions ----------------------------------------------------------*/
 void _hlink_encode_sbus(hlink_sbus_t *sbus, uint8_t *buf) {
-    buf[0] = sbus->channel[0] & 0xFF;
-    buf[1] = ((sbus->channel[0] >> 8) & 0x07) | ((sbus->channel[1] << 3) & 0xF8);
-    buf[2] = ((sbus->channel[1] >> 5) & 0x3F) | ((sbus->channel[2] << 6) & 0xC0);
-    buf[3] = (sbus->channel[2] >> 2) & 0xFF;
-    buf[4] = ((sbus->channel[2] >> 10) & 0x01) | ((sbus->channel[3] << 1) & 0xFE);
-    buf[5] = ((sbus->channel[3] >> 7) & 0x0F) | ((sbus->channel[4] << 4) & 0xF0);
-    buf[6] = ((sbus->channel[4] >> 4) & 0x7F) | ((sbus->channel[5] << 7) & 0x80);
-    buf[7] = (sbus->channel[5] >> 1) & 0xFF;
-    buf[8] = ((sbus->channel[5] >> 9) & 0x03) | ((sbus->channel[6] << 2) & 0xFC);
-    buf[9] = ((sbus->channel[6] >> 6) & 0x1F) | ((sbus->channel[7] << 5) & 0xE0);
-    buf[10] = (sbus->channel[7] >> 3) & 0xFF;
+    int buf_base, ch_base;
 
-    // to be continue...
+    for (int i = 0; i < 2; i++) {
+        buf_base = 11 * i;
+        ch_base = 8 * i;
+        buf[buf_base + 0] = sbus->channel[ch_base + 0] & 0xFF;
+        buf[buf_base + 1] = ((sbus->channel[ch_base + 0] >> 8) & 0x07) | ((sbus->channel[ch_base + 1] << 3) & 0xF8);
+        buf[buf_base + 2] = ((sbus->channel[ch_base + 1] >> 5) & 0x3F) | ((sbus->channel[ch_base + 2] << 6) & 0xC0);
+        buf[buf_base + 3] = (sbus->channel[ch_base + 2] >> 2) & 0xFF;
+        buf[buf_base + 4] = ((sbus->channel[ch_base + 2] >> 10) & 0x01) | ((sbus->channel[ch_base + 3] << 1) & 0xFE);
+        buf[buf_base + 5] = ((sbus->channel[ch_base + 3] >> 7) & 0x0F) | ((sbus->channel[ch_base + 4] << 4) & 0xF0);
+        buf[buf_base + 6] = ((sbus->channel[ch_base + 4] >> 4) & 0x7F) | ((sbus->channel[ch_base + 5] << 7) & 0x80);
+        buf[buf_base + 7] = (sbus->channel[ch_base + 5] >> 1) & 0xFF;
+        buf[buf_base + 8] = ((sbus->channel[ch_base + 5] >> 9) & 0x03) | ((sbus->channel[ch_base + 6] << 2) & 0xFC);
+        buf[buf_base + 9] = ((sbus->channel[ch_base + 6] >> 6) & 0x1F) | ((sbus->channel[ch_base + 7] << 5) & 0xE0);
+        buf[buf_base + 10] = (sbus->channel[ch_base + 7] >> 3) & 0xFF;
+    }
 
     buf[22] = sbus->flags;
 }
 
 void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
+    int ch_base, buf_base;
+
     printf("decode sbus\n");
 
-    sbus->channel[0] = ((buf[1] << 8) | buf[0]) & 0x7FF;
-    sbus->channel[1] = ((buf[2] << 5) | (buf[1] >> 3)) & 0x7FF;
-    sbus->channel[2] = ((buf[4] << 10) | (buf[3] << 2) | (buf[2] >> 6)) & 0x7FF;
-    sbus->channel[3] = ((buf[5] << 7) | (buf[4] >> 1)) & 0x7FF;
-    sbus->channel[4] = ((buf[6] << 4) | (buf[5] >> 4)) & 0x7FF;
-    sbus->channel[5] = ((buf[8] << 9) | (buf[7] << 1) | (buf[6] >> 7)) & 0x7FF;
-    sbus->channel[6] = ((buf[9] << 6) | (buf[8] >> 2)) & 0x7FF;
-    sbus->channel[7] = ((buf[10] << 3) | (buf[9] >> 5)) & 0x7FF;
-
-    sbus->channel[8] = ((buf[12] << 8) | buf[11]) & 0x7FF;
-    sbus->channel[9] = ((buf[13] << 5) | (buf[12] >> 3)) & 0x7FF;
-    sbus->channel[10] = ((buf[15] << 10) | (buf[14] << 2) | (buf[13] >> 6)) & 0x7FF;
-    sbus->channel[11] = ((buf[16] << 7) | (buf[15] >> 1)) & 0x7FF;
-    sbus->channel[12] = ((buf[17] << 4) | (buf[16] >> 4)) & 0x7FF;
-    sbus->channel[13] = ((buf[19] << 9) | (buf[18] << 1) | (buf[17] >> 7)) & 0x7FF;
-    sbus->channel[14] = ((buf[20] << 6) | (buf[19] >> 2)) & 0x7FF;
-    sbus->channel[15] = ((buf[21] << 3) | (buf[20] >> 5)) & 0x7FF;
+    for (int i = 0; i < 2; i++) {
+        ch_base = i * 8;
+        buf_base = i * 11;
+        sbus->channel[ch_base + 0] = ((buf[buf_base + 1] << 8) | buf[buf_base + 0]) & 0x7FF;
+        sbus->channel[ch_base + 1] = ((buf[buf_base + 2] << 5) | (buf[buf_base + 1] >> 3)) & 0x7FF;
+        sbus->channel[ch_base + 2] = ((buf[buf_base + 4] << 10) | (buf[buf_base + 3] << 2) | (buf[buf_base + 2] >> 6)) & 0x7FF;
+        sbus->channel[ch_base + 3] = ((buf[buf_base + 5] << 7) | (buf[buf_base + 4] >> 1)) & 0x7FF;
+        sbus->channel[ch_base + 4] = ((buf[buf_base + 6] << 4) | (buf[buf_base + 5] >> 4)) & 0x7FF;
+        sbus->channel[ch_base + 5] = ((buf[buf_base + 8] << 9) | (buf[buf_base + 7] << 1) | (buf[buf_base + 6] >> 7)) & 0x7FF;
+        sbus->channel[ch_base + 6] = ((buf[buf_base + 9] << 6) | (buf[buf_base + 8] >> 2)) & 0x7FF;
+        sbus->channel[ch_base + 7] = ((buf[buf_base + 10] << 3) | (buf[buf_base + 9] >> 5)) & 0x7FF;
+    }
 
     sbus->flags = buf[22];
 }
@@ -279,9 +280,7 @@ bool hlink_receive_data(uint8_t data) {
     bool new_frame_received = false; if (_HLINK_FRAME_MARKER == data) { if (frame_position < (_HLINK_MIN_FRAME_LEN - 1)) { // Head
             // or under size frame, treat as a new frame
             frame_position = 1;
-            // TODO: record time
         } else {
-            // TODO: check time
             // Tail
             _hlink_rx_buf_size[_hlink_isr_buf_id] = frame_position - 1;
             frame_position = 0;
