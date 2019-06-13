@@ -1,5 +1,4 @@
 /* Includes -------------------------------------------------------------------*/
-#include <stddef.h>
 #include <string.h>
 #include "horizon_link.h"
 // test
@@ -22,29 +21,21 @@
 // TLVs
 #define _HLINK_TLV_SBUS_TYPE (0x41)
 #define _HLINK_TLV_SBUS_LEN  (23)
+#define _HLINK_TLV_QUAT_TYPE (0x21)
+#define _HLINK_TLV_QUAT_LEN  (8)
 
 /* Private typedef ------------------------------------------------------------*/
-// typedef vector<uint8_t> _hlink_frame_buf_t;
 typedef uint8_t _hlink_frame_buf_t[_HLINK_MAX_FRAME_LEN];
 
 /* Private variables ----------------------------------------------------------*/
-// vector<_hlink_frame_buf_t> _hlink_rx_buf;
 static _hlink_frame_buf_t _hlink_rx_buf[_HLINK_NR_RX_BUFS];
-// _hlink_rx_buf[i].size();
 static volatile size_t _hlink_rx_buf_size[_HLINK_NR_RX_BUFS];
-// _hlink_frame_buf_t _hlink_tx_frame_buf;
 static _hlink_frame_buf_t _hlink_tx_frame_buf;
-// _hlink_tx_frame_buf.size();
 static size_t _hlink_tx_frame_buf_size;
-// /* _hlink_frame_buf_t::max_size(); */
-//const size_t _hlink_frame_buf_t_max_size = _HLINK_MAX_FRAME_LEN;
 
-// _hlink_rx_buf[_hlink_isr_buf_id]
-static volatile size_t _hlink_isr_buf_id = 0;
-// _hlink_rx_buf[_hlink_task_buf_id]
-static volatile size_t _hlink_task_buf_id = 0;
+static volatile int _hlink_isr_buf_id = 0;
+static volatile int _hlink_task_buf_id = 0;
 
-// for convenience
 static hlink_tlv_set_t _hlink_tlv_set_mask;
 static int _hlink_nr_tlvs = 0;
 
@@ -92,6 +83,24 @@ void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
     sbus->flags = buf[22];
 }
 
+void _hlink_encode_quat(hlink_quat_t *quat, uint8_t *buf) {
+    uint16_t *p = (uint16_t*) &quat->component[0];
+    for (int i = 0; i < 4; i++) {
+        buf[2 * i] = *p & 0xFF;
+        buf[2 * i + 1] = *p >> 8;
+        p++;
+    }
+}
+
+void _hlink_decode_quat(uint8_t *buf, hlink_quat_t *quat) {
+    uint16_t *p = (uint16_t*) &quat->component[0];
+    for (int i = 0; i < 4; i++) {
+        *p = buf[2 * i];
+        *p |= buf[2 * i + 1] << 8;
+        p++;
+    }
+}
+
 size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
     uint8_t type = buf[0]; // it is guaranteed that frame_len is at least 2 bytes
     size_t next_tlv = 0; // default value, assume that the frame doesn't contain a STLV
@@ -132,7 +141,7 @@ size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set
 
     type = buf[0];
     len = buf[1];
-    if (frame_len < (len + 2)) {
+    if (frame_len < ((size_t) len + 2)) {
         // under size
         printf("under size\n");
         return frame_len;
@@ -143,12 +152,27 @@ size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set
         // len is fixed
         if (len == _HLINK_TLV_SBUS_LEN) {
             next_tlv = len + 2; // mark next tlv position
-            if (tlv_set->sbus != NULL) {
+            if ((tlv_set->sbus != NULL)
+                // in case of duplicated TLV
+                && (_hlink_tlv_set_mask.sbus == NULL)) {
                 // record this tlv
                 _hlink_tlv_set_mask.sbus = tlv_set->sbus;
                 _hlink_nr_tlvs++;
                 // decode
                 _hlink_decode_sbus(buf + 2, tlv_set->sbus);
+            }
+        }
+        break;
+    case _HLINK_TLV_QUAT_TYPE:
+        if (len == _HLINK_TLV_QUAT_LEN) {
+            next_tlv = len + 2;
+            if ((tlv_set->quat != NULL)
+                && (_hlink_tlv_set_mask.quat == NULL)) {
+                // recode
+                _hlink_tlv_set_mask.quat = tlv_set->quat;
+                _hlink_nr_tlvs++;
+                // decode
+                _hlink_decode_quat(buf + 2, tlv_set->quat);
             }
         }
         break;
@@ -177,7 +201,8 @@ bool _hlink_validate_checksum(uint8_t *buf, size_t frame_len) {
     return (checksum == _HLINK_CRC_VALUE);
 }
 
-int hlink_prepare_frame(hlink_tlv_set_t *tlv_set) {
+/* Functions -----------------------------------------------------------------*/
+int hlink_make_frame(hlink_tlv_set_t *tlv_set) {
     hlink_tlv_set_t tlv_set_mask;
     int nr_tlvs = 0;
     size_t frame_position = 0;
@@ -193,6 +218,17 @@ int hlink_prepare_frame(hlink_tlv_set_t *tlv_set) {
         _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_SBUS_LEN;
         _hlink_encode_sbus(tlv_set->sbus, _hlink_tx_frame_buf + frame_position);
         frame_position += _HLINK_TLV_SBUS_LEN;
+    }
+
+    if ((tlv_set->quat != NULL)
+        && ((_HLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + _HLINK_TLV_QUAT_LEN))) {
+        tlv_set_mask.quat = tlv_set->quat;
+        nr_tlvs++;
+        // encode quat TLV
+        _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_QUAT_TYPE;
+        _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_QUAT_LEN;
+        _hlink_encode_quat(tlv_set->quat, _hlink_tx_frame_buf + frame_position);
+        frame_position += _HLINK_TLV_QUAT_LEN;
     }
 
     if (nr_tlvs > 0) {
@@ -267,18 +303,24 @@ int hlink_process_frame(hlink_tlv_set_t *tlv_set) {
         printf("bad crc\n");
     }
 
-    _hlink_task_buf_id = (_hlink_task_buf_id != 0) ? 0 : 1;
+    // pseudo memory barrier: make a dependency on frame_position
+    if (frame_position <= frame_len) {
+        _hlink_task_buf_id = (_hlink_task_buf_id != 0) ? 0 : 1;
+    }
 
     memcpy(tlv_set, &_hlink_tlv_set_mask, sizeof(_hlink_tlv_set_mask));
     return _hlink_nr_tlvs;
 }
 
-// ISR
+/* ISR ------------------------------------------------------------------------*/
 bool hlink_receive_data(uint8_t data) {
     static size_t frame_position = 0;
     static bool escaped_character = false;
-    bool new_frame_received = false; if (_HLINK_FRAME_MARKER == data) { if (frame_position < (_HLINK_MIN_FRAME_LEN - 1)) { // Head
-            // or under size frame, treat as a new frame
+    bool new_frame_received = false;
+
+    if (_HLINK_FRAME_MARKER == data) {
+        if (frame_position < (_HLINK_MIN_FRAME_LEN - 1)) {
+            // Head or under size frame, treat as a new frame
             frame_position = 1;
         } else {
             // Tail

@@ -14,6 +14,10 @@ typedef struct {
 } hlink_sbus_t;
 
 typedef struct {
+    float component[4];
+} hlink_quat_t;
+
+typedef struct {
     hlink_sbus_t *sbus;
     uint8_t rssi;
 } hlink_fport_ctrl_t;
@@ -21,10 +25,11 @@ typedef struct {
 typedef struct {
     hlink_fport_ctrl_t *fport_ctrl;
     hlink_sbus_t *sbus;
+    hlink_quat_t *quat;
 } hlink_tlv_set_t;
 
 // sending
-int hlink_prepare_frame(hlink_tlv_set_t*);
+int hlink_make_frame(hlink_tlv_set_t*);
 size_t hlink_prepare_tx_buf(uint8_t*, size_t);
 // receiving
 bool hlink_receive_data(uint8_t);
