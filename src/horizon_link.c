@@ -23,6 +23,8 @@
 #define _HLINK_TLV_SBUS_LEN  (23)
 #define _HLINK_TLV_QUAT_TYPE (0x21)
 #define _HLINK_TLV_QUAT_LEN  (8)
+#define _HLINK_TLV_PID_TYPE  (0x11)
+#define _HLINK_TLV_PID_LEN   (3)
 
 /* Private typedef ------------------------------------------------------------*/
 typedef uint8_t _hlink_frame_buf_t[_HLINK_MAX_FRAME_LEN];
@@ -40,7 +42,7 @@ static hlink_tlv_set_t _hlink_tlv_set_mask;
 static int _hlink_nr_tlvs = 0;
 
 /* Private functions ----------------------------------------------------------*/
-void _hlink_encode_sbus(hlink_sbus_t *sbus, uint8_t *buf) {
+void _hlink_encode_sbus(const hlink_sbus_t *sbus, uint8_t *buf) {
     int buf_base, ch_base;
 
     for (int i = 0; i < 2; i++) {
@@ -62,7 +64,7 @@ void _hlink_encode_sbus(hlink_sbus_t *sbus, uint8_t *buf) {
     buf[22] = sbus->flags;
 }
 
-void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
+void _hlink_decode_sbus(const uint8_t *buf, hlink_sbus_t *sbus) {
     int ch_base, buf_base;
 
     printf("decode sbus\n");
@@ -83,7 +85,7 @@ void _hlink_decode_sbus(uint8_t *buf, hlink_sbus_t *sbus) {
     sbus->flags = buf[22];
 }
 
-void _hlink_encode_quat(hlink_quat_t *quat, uint8_t *buf) {
+void _hlink_encode_quat(const hlink_quat_t *quat, uint8_t *buf) {
     uint16_t *p = (uint16_t*) &quat->component[0];
     for (int i = 0; i < 4; i++) {
         buf[2 * i] = *p & 0xFF;
@@ -92,13 +94,27 @@ void _hlink_encode_quat(hlink_quat_t *quat, uint8_t *buf) {
     }
 }
 
-void _hlink_decode_quat(uint8_t *buf, hlink_quat_t *quat) {
+void _hlink_decode_quat(const uint8_t *buf, hlink_quat_t *quat) {
     uint16_t *p = (uint16_t*) &quat->component[0];
     for (int i = 0; i < 4; i++) {
         *p = buf[2 * i];
         *p |= buf[2 * i + 1] << 8;
         p++;
     }
+}
+
+void _hlink_encode_pid(const hlink_pid_t *pid, uint8_t *buf) {
+    uint16_t *p = (uint16_t*) &pid->pid;
+    buf[0] = pid->flag;
+    buf[1] = *p & 0xFF;
+    buf[2] = *p >> 8;
+}
+
+void _hlink_decode_pid(const uint8_t *buf, hlink_pid_t *pid) {
+    uint16_t *p = (uint16_t*) &pid->pid;
+    pid->flag = buf[0];
+    *p = buf[1];
+    *p |= buf[2] << 8;
 }
 
 size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
@@ -168,7 +184,7 @@ size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set
             next_tlv = len + 2;
             if ((tlv_set->quat != NULL)
                 && (_hlink_tlv_set_mask.quat == NULL)) {
-                // recode
+                // record
                 _hlink_tlv_set_mask.quat = tlv_set->quat;
                 _hlink_nr_tlvs++;
                 // decode
@@ -176,6 +192,18 @@ size_t _hlink_parse_tlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set
             }
         }
         break;
+    case _HLINK_TLV_PID_TYPE:
+        if (len == _HLINK_TLV_PID_LEN) {
+            next_tlv = len + 2;
+            if ((tlv_set->pid != NULL)
+                && (_hlink_tlv_set_mask.pid == NULL)) {
+                // record
+                _hlink_tlv_set_mask.pid = tlv_set->pid;
+                _hlink_nr_tlvs++;
+                // decode
+                _hlink_decode_pid(buf + 2, tlv_set->pid);
+            }
+        }
     default:
         break;
     }
@@ -229,6 +257,17 @@ int hlink_make_frame(hlink_tlv_set_t *tlv_set) {
         _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_QUAT_LEN;
         _hlink_encode_quat(tlv_set->quat, _hlink_tx_frame_buf + frame_position);
         frame_position += _HLINK_TLV_QUAT_LEN;
+    }
+
+    if ((tlv_set->pid != NULL)
+        && ((_HLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + _HLINK_TLV_PID_LEN))) {
+        tlv_set_mask.pid = tlv_set->pid;
+        nr_tlvs++;
+        // encode pid TLV
+        _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_PID_TYPE;
+        _hlink_tx_frame_buf[frame_position++] = _HLINK_TLV_PID_LEN;
+        _hlink_encode_pid(tlv_set->pid, _hlink_tx_frame_buf + frame_position);
+        frame_position += _HLINK_TLV_PID_LEN;
     }
 
     if (nr_tlvs > 0) {

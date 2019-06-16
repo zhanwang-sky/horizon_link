@@ -18,6 +18,11 @@ typedef struct {
 } hlink_quat_t;
 
 typedef struct {
+    uint8_t flag; // 0, 1, 2: PID
+    float pid;
+} hlink_pid_t;
+
+typedef struct {
     hlink_sbus_t *sbus;
     uint8_t rssi;
 } hlink_fport_ctrl_t;
@@ -26,6 +31,7 @@ typedef struct {
     hlink_fport_ctrl_t *fport_ctrl;
     hlink_sbus_t *sbus;
     hlink_quat_t *quat;
+    hlink_pid_t *pid;
 } hlink_tlv_set_t;
 
 // sending
