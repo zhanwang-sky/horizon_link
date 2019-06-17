@@ -22,9 +22,9 @@
 #define _HLINK_TLV_SBUS_TYPE (0x41)
 #define _HLINK_TLV_SBUS_LEN  (23)
 #define _HLINK_TLV_QUAT_TYPE (0x21)
-#define _HLINK_TLV_QUAT_LEN  (8)
+#define _HLINK_TLV_QUAT_LEN  (16)
 #define _HLINK_TLV_PID_TYPE  (0x11)
-#define _HLINK_TLV_PID_LEN   (3)
+#define _HLINK_TLV_PID_LEN   (5)
 
 /* Private typedef ------------------------------------------------------------*/
 typedef uint8_t _hlink_frame_buf_t[_HLINK_MAX_FRAME_LEN];
@@ -86,35 +86,43 @@ void _hlink_decode_sbus(const uint8_t *buf, hlink_sbus_t *sbus) {
 }
 
 void _hlink_encode_quat(const hlink_quat_t *quat, uint8_t *buf) {
-    uint16_t *p = (uint16_t*) &quat->component[0];
+    uint32_t *p = (uint32_t*) &quat->component[0];
     for (int i = 0; i < 4; i++) {
         buf[2 * i] = *p & 0xFF;
-        buf[2 * i + 1] = *p >> 8;
+        buf[2 * i + 1] = (*p >> 8) & 0xFF;
+        buf[2 * i + 2] = (*p >> 16) & 0xFF;
+        buf[2 * i + 3] = *p >> 24;
         p++;
     }
 }
 
 void _hlink_decode_quat(const uint8_t *buf, hlink_quat_t *quat) {
-    uint16_t *p = (uint16_t*) &quat->component[0];
+    uint32_t *p = (uint32_t*) &quat->component[0];
     for (int i = 0; i < 4; i++) {
         *p = buf[2 * i];
         *p |= buf[2 * i + 1] << 8;
+        *p |= buf[2 * i + 2] << 16;
+        *p |= buf[2 * i + 3] << 24;
         p++;
     }
 }
 
 void _hlink_encode_pid(const hlink_pid_t *pid, uint8_t *buf) {
-    uint16_t *p = (uint16_t*) &pid->pid;
+    uint32_t *p = (uint32_t*) &pid->pid;
     buf[0] = pid->flag;
     buf[1] = *p & 0xFF;
-    buf[2] = *p >> 8;
+    buf[2] = (*p >> 8) & 0xFF;
+    buf[3] = (*p >> 16) & 0xFF;
+    buf[4] = *p >> 24;
 }
 
 void _hlink_decode_pid(const uint8_t *buf, hlink_pid_t *pid) {
-    uint16_t *p = (uint16_t*) &pid->pid;
+    uint32_t *p = (uint32_t*) &pid->pid;
     pid->flag = buf[0];
     *p = buf[1];
     *p |= buf[2] << 8;
+    *p |= buf[3] << 16;
+    *p |= buf[4] << 24;
 }
 
 size_t _hlink_parse_stlv(uint8_t *buf, size_t frame_len, hlink_tlv_set_t *tlv_set) {
