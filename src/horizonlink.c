@@ -230,6 +230,7 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
                 _horizonlink_decode_pid(buf + 2, tlv_set->att_pid);
             }
         }
+        break;
     default:
         break;
     }
