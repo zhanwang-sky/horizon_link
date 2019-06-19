@@ -1,5 +1,5 @@
 TARGET := libhorizonlink.so
-HEADERS := horizon_link.h
+HEADERS := horizonlink.h
 
 CC := gcc
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -g
@@ -7,9 +7,9 @@ CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -g
 LIB_DIR := ~/.local/lib/
 INCLUDE_DIR := ~/.local/include/
 
-$(TARGET): horizon_link.o
+$(TARGET): horizonlink.o
 	$(CC) -shared -o $@ $^
-horizon_link.o: horizon_link.c horizon_link.h
+horizonlink.o: horizonlink.c horizonlink.h
 	$(CC) $(CFLAGS) -c -fPIC -o $@ $<
 
 .PHONY: install uninstall rebuild clean all
