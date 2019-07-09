@@ -26,7 +26,7 @@
 // point-to-point TLVs
 #define _HORIZONLINK_TLV_ATT_PID_TYPE     (0xA1)
 #define _HORIZONLINK_TLV_ATT_PID_T0_LEN   (37)
-#define _HORIZONLINK_TLV_ATT_PID_T1_LEN   (1)
+#define _HORIZONLINK_TLV_ATT_PID_Tx_LEN   (2)
 
 /* Private typedef ------------------------------------------------------------*/
 typedef uint8_t _horizonlink_frame_buf_t[_HORIZONLINK_MAX_FRAME_LEN];
@@ -110,30 +110,24 @@ void _horizonlink_decode_sbus(const uint8_t *buf, horizonlink_sbus_t *sbus) {
 }
 
 void _horizonlink_encode_pid(const horizonlink_pid_t *pid, uint8_t *buf) {
-    buf[0] = pid->cmd.seq;
-    if (pid->cmd.type == 0) {
-        uint32_t *p = (uint32_t*) pid->pid;
-        for (int i = 0; i < 9; i++) {
-            buf[4*i + 1] = *p & 0xFF;
-            buf[4*i + 2] = (*p >> 8) & 0xFF;
-            buf[4*i + 3] = (*p >> 16) & 0xFF;
-            buf[4*i + 4] = *p >> 24;
-            p++;
-        }
+    uint32_t *p = (uint32_t*) pid->pid;
+    for (int i = 0; i < 9; i++) {
+        buf[4*i] = *p & 0xFF;
+        buf[4*i + 1] = (*p >> 8) & 0xFF;
+        buf[4*i + 2] = (*p >> 16) & 0xFF;
+        buf[4*i + 3] = *p >> 24;
+        p++;
     }
 }
 
 void _horizonlink_decode_pid(const uint8_t *buf, horizonlink_pid_t *pid) {
-    pid->cmd.seq = buf[0];
-    if (pid->cmd.type == 0) {
-        uint32_t *p = (uint32_t*) pid->pid;
-        for (int i = 0; i < 9; i++) {
-            *p = buf[4*i + 1];
-            *p |= buf[4*i + 2] << 8;
-            *p |= buf[4*i + 3] << 16;
-            *p |= buf[4*i + 4] << 24;
-            p++;
-        }
+    uint32_t *p = (uint32_t*) pid->pid;
+    for (int i = 0; i < 9; i++) {
+        *p = buf[4*i];
+        *p |= buf[4*i + 1] << 8;
+        *p |= buf[4*i + 2] << 16;
+        *p |= buf[4*i + 3] << 24;
+        p++;
     }
 }
 
@@ -191,11 +185,11 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
             if ((tlv_set->sbus != NULL)
                 // in case of duplicated TLV
                 && (_horizonlink_tlv_set_mask.sbus == NULL)) {
+                // decode
+                _horizonlink_decode_sbus(buf + 2, tlv_set->sbus);
                 // record this tlv
                 _horizonlink_tlv_set_mask.sbus = tlv_set->sbus;
                 _horizonlink_nr_tlvs++;
-                // decode
-                _horizonlink_decode_sbus(buf + 2, tlv_set->sbus);
             }
         }
         break;
@@ -204,30 +198,30 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
             next_tlv = len + 2;
             if ((tlv_set->att_quat != NULL)
                 && (_horizonlink_tlv_set_mask.att_quat == NULL)) {
+                // decode
+                _horizonlink_decode_quat(buf + 2, tlv_set->att_quat);
                 // record
                 _horizonlink_tlv_set_mask.att_quat = tlv_set->att_quat;
                 _horizonlink_nr_tlvs++;
-                // decode
-                _horizonlink_decode_quat(buf + 2, tlv_set->att_quat);
             }
         }
         break;
     case _HORIZONLINK_TLV_ATT_PID_TYPE:
         if ((len == _HORIZONLINK_TLV_ATT_PID_T0_LEN)
-            || (len == _HORIZONLINK_TLV_ATT_PID_T1_LEN)) {
+            || (len == _HORIZONLINK_TLV_ATT_PID_Tx_LEN)) {
             next_tlv = len + 2;
             if ((tlv_set->att_pid != NULL)
                 && (_horizonlink_tlv_set_mask.att_pid == NULL)) {
+                tlv_set->att_pid->cmd.seq = buf[2];
                 if (len == _HORIZONLINK_TLV_ATT_PID_T0_LEN) {
                     tlv_set->att_pid->cmd.type = 0;
+                    _horizonlink_decode_pid(buf + 3, tlv_set->att_pid);
                 } else {
-                    tlv_set->att_pid->cmd.type = 1;
+                    tlv_set->att_pid->cmd.type = buf[3];
                 }
                 // record
                 _horizonlink_tlv_set_mask.att_pid = tlv_set->att_pid;
                 _horizonlink_nr_tlvs++;
-                // decode
-                _horizonlink_decode_pid(buf + 2, tlv_set->att_pid);
             }
         }
         break;
@@ -293,7 +287,7 @@ int horizonlink_pack(horizonlink_tlv_set_t *tlv_set) {
         if (tlv_set->att_pid->cmd.type == 0) {
             actual_len = _HORIZONLINK_TLV_ATT_PID_T0_LEN;
         } else {
-            actual_len = _HORIZONLINK_TLV_ATT_PID_T1_LEN;
+            actual_len = _HORIZONLINK_TLV_ATT_PID_Tx_LEN;
         }
         if ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + actual_len)) {
             tlv_set_mask.att_pid = tlv_set->att_pid;
@@ -301,7 +295,12 @@ int horizonlink_pack(horizonlink_tlv_set_t *tlv_set) {
             // encode attitude pid TLV
             _horizonlink_tx_frame_buf[frame_position++] = _HORIZONLINK_TLV_ATT_PID_TYPE;
             _horizonlink_tx_frame_buf[frame_position++] = actual_len;
-            _horizonlink_encode_pid(tlv_set->att_pid, _horizonlink_tx_frame_buf + frame_position);
+            _horizonlink_tx_frame_buf[frame_position] = tlv_set->att_pid->cmd.seq;
+            if (tlv_set->att_pid->cmd.type == 0) {
+                _horizonlink_encode_pid(tlv_set->att_pid, _horizonlink_tx_frame_buf + frame_position + 1);
+            } else {
+                _horizonlink_tx_frame_buf[frame_position + 1] = tlv_set->att_pid->cmd.type;
+            }
             frame_position += actual_len;
         }
     }

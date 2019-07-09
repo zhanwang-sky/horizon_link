@@ -20,14 +20,21 @@ typedef struct {
 
 // point-to-point TLVs
 typedef struct {
-    uint8_t type; // 0 write, 1 for reading
     uint8_t seq;
+    uint8_t type; // 0 with data, 1 request/ACK, 2 NACK
 } horizonlink_cmd_t;
 
 typedef struct {
     horizonlink_cmd_t cmd;
     float pid[9]; // p,i,d in yaw,pitch,roll
 } horizonlink_pid_t;
+
+typedef struct {
+    uint8_t msg_type;
+    union {
+        horizonlink_pid_t pid;
+    } p2ptlv_union;
+} horizonlink_p2ptlv_union_t;
 
 // STLVs
 typedef struct {
