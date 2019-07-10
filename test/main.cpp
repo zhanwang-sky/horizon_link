@@ -15,7 +15,9 @@ horizonlink_sbus_t sbus_rx;
 horizonlink_pid_t att_pid_tx;
 horizonlink_pid_t att_pid_rx;
 
-uint8_t raw_buf[500] = { 0 };
+horizonlink_tx_handle_t tx_hdl;
+horizonlink_rx_handle_t rx_hdl;
+uint8_t raw_buf[87] = { 0 };
 
 void stuff_quat(horizonlink_quat_t *quat) {
     quat->component[0] = 3.14159;
@@ -36,9 +38,9 @@ bool compare_quat(horizonlink_quat_t *lhs, horizonlink_quat_t *rhs) {
 
 void stuff_sbus(horizonlink_sbus_t *sbus) {
     for (int i = 0; i < 16; i++) {
-        sbus->channel[i] = 126 + i * 62.5;
+        sbus->channel[i] = _HORIZONLINK_FRAME_MARKER * i;
     }
-    sbus->flags = 0x7D;
+    sbus->flags = _HORIZONLINK_FRAME_MARKER;
 }
 
 bool compare_sbus(horizonlink_sbus_t *lhs, horizonlink_sbus_t *rhs) {
@@ -56,22 +58,22 @@ bool compare_sbus(horizonlink_sbus_t *lhs, horizonlink_sbus_t *rhs) {
 }
 
 void stuff_pid(horizonlink_pid_t *pid) {
-    pid->cmd.seq = 0x5D;
+    pid->subcmd.seq = _HORIZONLINK_ESCAPE_CHAR;
     for (int i = 0; i < 9; i++) {
         pid->pid[i] = -3.5 + i * 12.5;
     }
 }
 
 bool compare_pid(horizonlink_pid_t *lhs, horizonlink_pid_t *rhs) {
-    if (lhs->cmd.seq != rhs->cmd.seq) {
+    if (lhs->subcmd.seq != rhs->subcmd.seq) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
-    if (lhs->cmd.type != rhs->cmd.type) {
+    if (lhs->subcmd.type != rhs->subcmd.type) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
-    if (lhs->cmd.type == 0) {
+    if (!lhs->subcmd.type) {
         for (int i = 0; i < 9; i++) {
             if (lhs->pid[i] != rhs->pid[i]) {
                 printf("%s(%d) i = %d\n", __FUNCTION__, __LINE__, i);
@@ -107,7 +109,7 @@ void stuff_tlvs(horizonlink_tlv_set_t *tlv_set) {
 }
 
 bool compare_tlvs(horizonlink_tlv_set_t *lhs, horizonlink_tlv_set_t *rhs) {
-    if (lhs->att_quat == NULL || rhs->att_quat == NULL) {
+    if (!lhs->att_quat || !rhs->att_quat) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
@@ -115,7 +117,7 @@ bool compare_tlvs(horizonlink_tlv_set_t *lhs, horizonlink_tlv_set_t *rhs) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
-    if (lhs->sbus == NULL || rhs->sbus == NULL) {
+    if (!lhs->sbus || !rhs->sbus) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
@@ -123,7 +125,7 @@ bool compare_tlvs(horizonlink_tlv_set_t *lhs, horizonlink_tlv_set_t *rhs) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
-    if (lhs->att_pid == NULL || rhs->att_pid == NULL) {
+    if (!lhs->att_pid || !rhs->att_pid) {
         printf("%s(%d)\n", __FUNCTION__, __LINE__);
         return true;
     }
@@ -136,7 +138,7 @@ bool compare_tlvs(horizonlink_tlv_set_t *lhs, horizonlink_tlv_set_t *rhs) {
 
 int main() {
     int i;
-    int rc;
+    bool ready;
 
     // prepare
     tlv_set_tx.att_quat = &att_quat_tx;
@@ -154,39 +156,45 @@ int main() {
     printf("round %d\n", x+1);
 
     // reset
+    memset(&tx_hdl, 0, sizeof(tx_hdl));
+    memset(&rx_hdl, 0, sizeof(rx_hdl));
     reset_tlvs(&tlv_set_tx);
     reset_tlvs(&tlv_set_rx);
+
     // stuff tx
     stuff_tlvs(&tlv_set_tx);
     // XXX
-    tlv_set_tx.att_pid->cmd.type = x;
+    tlv_set_tx.att_pid->subcmd.type = x;
     // XXX
     // pack
-    rc = horizonlink_pack(&tlv_set_tx);
-    printf("(%d) horizonlink_pack returns %d\n", __LINE__, rc);
-    if (rc != 3) {
+    int nr_tlvs;
+    nr_tlvs = horizonlink_pack(&tx_hdl, &tlv_set_tx);
+    printf("(%d) horizonlink_pack returns %d\n", __LINE__, nr_tlvs);
+    if (nr_tlvs != 3) {
         goto ERR_EXIT;
     }
     // prepare buffer
-    rc = (int) horizonlink_disperse(raw_buf, sizeof(raw_buf));
-    printf("(%d) horizonlink_disperse returns %d\n", __LINE__, rc);
-    if (rc == 0) {
+    int bytes_to_send = sizeof(raw_buf);
+    ready = horizonlink_disperse(&tx_hdl, raw_buf, &bytes_to_send);
+    printf("(%d) horizonlink_disperse returns %s\n", __LINE__, ready ? "true" : "false");
+    printf("(%d) %d bytes to send\n", __LINE__, bytes_to_send);
+    if (!ready) {
         goto ERR_EXIT;
     }
     // assemble frame
-    for (i = 0; i < rc; i++) {
-        if (horizonlink_assemble(raw_buf[i])) {
+    for (i = 0; i < bytes_to_send; i++) {
+        if ((ready = horizonlink_assemble(&rx_hdl, raw_buf[i]))) {
             break;
         }
     }
-    printf("(%d) %d bytes processed\n", __LINE__, i);
-    if (i != (rc - 1)) {
+    printf("(%d) horizonlink_assemble returns %s\n", __LINE__, ready ? "true" : "false");
+    if (!ready) {
         goto ERR_EXIT;
     }
     // unpack
-    rc = (int) horizonlink_unpack(&tlv_set_rx);
-    printf("(%d) horizonlink_unpack returns %d\n", __LINE__, rc);
-    if (rc != 3) {
+    nr_tlvs = horizonlink_unpack(&rx_hdl, &tlv_set_rx);
+    printf("(%d) horizonlink_unpack returns %d\n", __LINE__, nr_tlvs);
+    if (nr_tlvs != 3) {
         goto ERR_EXIT;
     }
     // compare

@@ -4,45 +4,6 @@
 // test
 #include <stdio.h>
 
-/* Private definitions --------------------------------------------------------*/
-// common
-#define _HORIZONLINK_NR_RX_BUFS (2)
-// horizonlink frame
-#define _HORIZONLINK_TL0_LEN       (2)
-#define _HORIZONLINK_MIN_FRAME_LEN (_HORIZONLINK_TL0_LEN + 3) // 7e T L CRC 7e
-#define _HORIZONLINK_MAX_FRAME_LEN (128)
-#define _HORIZONLINK_FRAME_MARKER  (0x7E)
-#define _HORIZONLINK_ESCAPE_CHAR   (0x7D)
-#define _HORIZONLINK_ESCAPE_MASK   (0x20)
-#define _HORIZONLINK_CRC_VALUE     (0xFF)
-// STLVs
-#define _HORIZONLINK_STLV_FPORT_CTRL_TYPE (0x19)
-#define _HORIZONLINK_STLV_FPORT_CTRL_LEN  (24)
-// publish-subscribe TLVs
-#define _HORIZONLINK_TLV_ATT_QUAT_TYPE    (0x42)
-#define _HORIZONLINK_TLV_ATT_QUAT_LEN     (16)
-#define _HORIZONLINK_TLV_SBUS_TYPE        (0x43)
-#define _HORIZONLINK_TLV_SBUS_LEN         (23)
-// point-to-point TLVs
-#define _HORIZONLINK_TLV_ATT_PID_TYPE     (0xA1)
-#define _HORIZONLINK_TLV_ATT_PID_T0_LEN   (37)
-#define _HORIZONLINK_TLV_ATT_PID_Tx_LEN   (2)
-
-/* Private typedef ------------------------------------------------------------*/
-typedef uint8_t _horizonlink_frame_buf_t[_HORIZONLINK_MAX_FRAME_LEN];
-
-/* Private variables ----------------------------------------------------------*/
-static _horizonlink_frame_buf_t _horizonlink_rx_frame_bufs[_HORIZONLINK_NR_RX_BUFS];
-static volatile size_t _horizonlink_rx_buf_size[_HORIZONLINK_NR_RX_BUFS];
-static _horizonlink_frame_buf_t _horizonlink_tx_frame_buf;
-static size_t _horizonlink_tx_frame_buf_size;
-
-static volatile int _horizonlink_isr_buf_id = 0;
-static volatile int _horizonlink_task_buf_id = 0;
-
-static horizonlink_tlv_set_t _horizonlink_tlv_set_mask;
-static int _horizonlink_nr_tlvs = 0;
-
 /* Private functions ----------------------------------------------------------*/
 void _horizonlink_encode_quat(const horizonlink_quat_t *quat, uint8_t *buf) {
     uint32_t *p = (uint32_t*) &quat->component[0];
@@ -131,9 +92,10 @@ void _horizonlink_decode_pid(const uint8_t *buf, horizonlink_pid_t *pid) {
     }
 }
 
-size_t _horizonlink_parse_stlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_set_t *tlv_set) {
+int _horizonlink_parse_stlv(uint8_t *buf, int frame_len, horizonlink_tlv_set_t *tlv_set,
+        horizonlink_tlv_set_t *tlv_set_mask, int *nr_tlvs) {
     uint8_t type = buf[0]; // it is guaranteed that frame_len is at least 2 bytes
-    size_t next_tlv = 0; // default value, assume that the frame doesn't contain a STLV
+    int next_tlv = 0; // default value, assume that the frame doesn't contain a STLV
 
     printf("parse stlv\n");
 
@@ -143,8 +105,8 @@ size_t _horizonlink_parse_stlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_s
             next_tlv = frame_len; // mark next tlv position (stop parsing remaining data)
             if (tlv_set->fport_ctrl != NULL) {
                 // record this STLV
-                _horizonlink_tlv_set_mask.fport_ctrl = tlv_set->fport_ctrl;
-                _horizonlink_nr_tlvs++;
+                tlv_set_mask->fport_ctrl = tlv_set->fport_ctrl;
+                (*nr_tlvs)++;
                 // decode
                 _horizonlink_decode_sbus(buf + 2, tlv_set->fport_ctrl->sbus);
                 tlv_set->fport_ctrl->rssi = buf[25];
@@ -158,10 +120,11 @@ size_t _horizonlink_parse_stlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_s
     return next_tlv;
 }
 
-size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_set_t *tlv_set) {
+int _horizonlink_parse_tlv(uint8_t *buf, int frame_len, horizonlink_tlv_set_t *tlv_set,
+        horizonlink_tlv_set_t *tlv_set_mask, int *nr_tlvs) {
     uint8_t type;
     uint8_t len;
-    size_t next_tlv = frame_len;
+    int next_tlv = frame_len;
 
     printf("parse tlv\n");
 
@@ -171,7 +134,7 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
 
     type = buf[0];
     len = buf[1];
-    if (frame_len < ((size_t) len + 2)) {
+    if (frame_len < (len + 2)) {
         // under size
         printf("under size\n");
         return frame_len;
@@ -184,12 +147,12 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
             next_tlv = len + 2; // mark next tlv position
             if ((tlv_set->sbus != NULL)
                 // in case of duplicated TLV
-                && (_horizonlink_tlv_set_mask.sbus == NULL)) {
+                && (tlv_set_mask->sbus == NULL)) {
                 // decode
                 _horizonlink_decode_sbus(buf + 2, tlv_set->sbus);
                 // record this tlv
-                _horizonlink_tlv_set_mask.sbus = tlv_set->sbus;
-                _horizonlink_nr_tlvs++;
+                tlv_set_mask->sbus = tlv_set->sbus;
+                (*nr_tlvs)++;
             }
         }
         break;
@@ -197,12 +160,12 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
         if (len == _HORIZONLINK_TLV_ATT_QUAT_LEN) {
             next_tlv = len + 2;
             if ((tlv_set->att_quat != NULL)
-                && (_horizonlink_tlv_set_mask.att_quat == NULL)) {
+                && (tlv_set_mask->att_quat == NULL)) {
                 // decode
                 _horizonlink_decode_quat(buf + 2, tlv_set->att_quat);
                 // record
-                _horizonlink_tlv_set_mask.att_quat = tlv_set->att_quat;
-                _horizonlink_nr_tlvs++;
+                tlv_set_mask->att_quat = tlv_set->att_quat;
+                (*nr_tlvs)++;
             }
         }
         break;
@@ -211,17 +174,17 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
             || (len == _HORIZONLINK_TLV_ATT_PID_Tx_LEN)) {
             next_tlv = len + 2;
             if ((tlv_set->att_pid != NULL)
-                && (_horizonlink_tlv_set_mask.att_pid == NULL)) {
-                tlv_set->att_pid->cmd.seq = buf[2];
+                && (tlv_set_mask->att_pid == NULL)) {
+                tlv_set->att_pid->subcmd.seq = buf[2];
                 if (len == _HORIZONLINK_TLV_ATT_PID_T0_LEN) {
-                    tlv_set->att_pid->cmd.type = 0;
+                    tlv_set->att_pid->subcmd.type = 0;
                     _horizonlink_decode_pid(buf + 3, tlv_set->att_pid);
                 } else {
-                    tlv_set->att_pid->cmd.type = buf[3];
+                    tlv_set->att_pid->subcmd.type = buf[3];
                 }
                 // record
-                _horizonlink_tlv_set_mask.att_pid = tlv_set->att_pid;
-                _horizonlink_nr_tlvs++;
+                tlv_set_mask->att_pid = tlv_set->att_pid;
+                (*nr_tlvs)++;
             }
         }
         break;
@@ -232,18 +195,18 @@ size_t _horizonlink_parse_tlv(uint8_t *buf, size_t frame_len, horizonlink_tlv_se
     return next_tlv;
 }
 
-uint8_t _horizonlink_compute_checksum(uint8_t *buf, size_t len) {
+uint8_t _horizonlink_compute_checksum(uint8_t *buf, int len) {
     uint16_t checksum = 0;
-    for (size_t i = 0; i < len; i++) {
+    for (int i = 0; i < len; i++) {
         checksum += buf[i];
     }
     checksum = (checksum & 0xFF) + (checksum >> 8);
     return (0xFF - checksum);
 }
 
-bool _horizonlink_validate_checksum(uint8_t *buf, size_t frame_len) {
+bool _horizonlink_validate_checksum(uint8_t *buf, int frame_len) {
     uint16_t checksum = 0;
-    for (size_t i = 0; i < frame_len; i++) {
+    for (int i = 0; i < frame_len; i++) {
         checksum += buf[i];
     }
     checksum = (checksum & 0xFF) + (checksum >> 8);
@@ -251,85 +214,96 @@ bool _horizonlink_validate_checksum(uint8_t *buf, size_t frame_len) {
 }
 
 /* Functions ------------------------------------------------------------------*/
-int horizonlink_pack(horizonlink_tlv_set_t *tlv_set) {
+int horizonlink_pack(horizonlink_tx_handle_t *tx_hdl, horizonlink_tlv_set_t *tlv_set) {
+    int frame_pos = 0;
     horizonlink_tlv_set_t tlv_set_mask;
     int nr_tlvs = 0;
-    size_t frame_position = 0;
+
+    // sanity check
+    if (!tx_hdl || !tlv_set) {
+        return 0;
+    }
 
     memset(&tlv_set_mask, 0, sizeof(tlv_set_mask));
 
     // publish-subscribe TLVs
     if ((tlv_set->att_quat != NULL)
-        && ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + _HORIZONLINK_TLV_ATT_QUAT_LEN))) {
+        && ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_pos + 2 + _HORIZONLINK_TLV_ATT_QUAT_LEN))) {
         tlv_set_mask.att_quat = tlv_set->att_quat;
         nr_tlvs++;
         // encode attitude quaternion TLV
-        _horizonlink_tx_frame_buf[frame_position++] = _HORIZONLINK_TLV_ATT_QUAT_TYPE;
-        _horizonlink_tx_frame_buf[frame_position++] = _HORIZONLINK_TLV_ATT_QUAT_LEN;
-        _horizonlink_encode_quat(tlv_set->att_quat, _horizonlink_tx_frame_buf + frame_position);
-        frame_position += _HORIZONLINK_TLV_ATT_QUAT_LEN;
+        tx_hdl->tx_buf[frame_pos++] = _HORIZONLINK_TLV_ATT_QUAT_TYPE;
+        tx_hdl->tx_buf[frame_pos++] = _HORIZONLINK_TLV_ATT_QUAT_LEN;
+        _horizonlink_encode_quat(tlv_set->att_quat, tx_hdl->tx_buf + frame_pos);
+        frame_pos += _HORIZONLINK_TLV_ATT_QUAT_LEN;
     }
 
     if ((tlv_set->sbus != NULL)
-        && ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + _HORIZONLINK_TLV_SBUS_LEN))) {
+        && ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_pos + 2 + _HORIZONLINK_TLV_SBUS_LEN))) {
         tlv_set_mask.sbus = tlv_set->sbus;
         nr_tlvs++;
         // encode sbus TLV
-        _horizonlink_tx_frame_buf[frame_position++] = _HORIZONLINK_TLV_SBUS_TYPE;
-        _horizonlink_tx_frame_buf[frame_position++] = _HORIZONLINK_TLV_SBUS_LEN;
-        _horizonlink_encode_sbus(tlv_set->sbus, _horizonlink_tx_frame_buf + frame_position);
-        frame_position += _HORIZONLINK_TLV_SBUS_LEN;
+        tx_hdl->tx_buf[frame_pos++] = _HORIZONLINK_TLV_SBUS_TYPE;
+        tx_hdl->tx_buf[frame_pos++] = _HORIZONLINK_TLV_SBUS_LEN;
+        _horizonlink_encode_sbus(tlv_set->sbus, tx_hdl->tx_buf + frame_pos);
+        frame_pos += _HORIZONLINK_TLV_SBUS_LEN;
     }
 
     // point-to-point TLVs
     if (tlv_set->att_pid != NULL) {
-        size_t actual_len = 0;
-        if (tlv_set->att_pid->cmd.type == 0) {
+        int actual_len = 0;
+        if (tlv_set->att_pid->subcmd.type == 0) {
             actual_len = _HORIZONLINK_TLV_ATT_PID_T0_LEN;
         } else {
             actual_len = _HORIZONLINK_TLV_ATT_PID_Tx_LEN;
         }
-        if ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_position + 2 + actual_len)) {
+        if ((_HORIZONLINK_MAX_FRAME_LEN - 1) >= (frame_pos + 2 + actual_len)) {
             tlv_set_mask.att_pid = tlv_set->att_pid;
             nr_tlvs++;
             // encode attitude pid TLV
-            _horizonlink_tx_frame_buf[frame_position++] = _HORIZONLINK_TLV_ATT_PID_TYPE;
-            _horizonlink_tx_frame_buf[frame_position++] = actual_len;
-            _horizonlink_tx_frame_buf[frame_position] = tlv_set->att_pid->cmd.seq;
-            if (tlv_set->att_pid->cmd.type == 0) {
-                _horizonlink_encode_pid(tlv_set->att_pid, _horizonlink_tx_frame_buf + frame_position + 1);
+            tx_hdl->tx_buf[frame_pos++] = _HORIZONLINK_TLV_ATT_PID_TYPE;
+            tx_hdl->tx_buf[frame_pos++] = actual_len;
+            tx_hdl->tx_buf[frame_pos] = tlv_set->att_pid->subcmd.seq;
+            if (tlv_set->att_pid->subcmd.type == 0) {
+                _horizonlink_encode_pid(tlv_set->att_pid, tx_hdl->tx_buf + frame_pos + 1);
             } else {
-                _horizonlink_tx_frame_buf[frame_position + 1] = tlv_set->att_pid->cmd.type;
+                tx_hdl->tx_buf[frame_pos + 1] = tlv_set->att_pid->subcmd.type;
             }
-            frame_position += actual_len;
+            frame_pos += actual_len;
         }
     }
 
     if (nr_tlvs > 0) {
-        _horizonlink_tx_frame_buf[frame_position] = _horizonlink_compute_checksum(_horizonlink_tx_frame_buf, frame_position);
-        frame_position++;
-        _horizonlink_tx_frame_buf_size = frame_position;
+        tx_hdl->tx_buf[frame_pos] = _horizonlink_compute_checksum(tx_hdl->tx_buf, frame_pos);
+        frame_pos++;
+        tx_hdl->len = frame_pos;
     }
 
     memcpy(tlv_set, &tlv_set_mask, sizeof(tlv_set_mask));
     return nr_tlvs;
 }
 
-int horizonlink_unpack(horizonlink_tlv_set_t *tlv_set) {
-    uint8_t *buf = _horizonlink_rx_frame_bufs[_horizonlink_task_buf_id];
-    size_t frame_position = 0,
-           frame_len = _horizonlink_rx_buf_size[_horizonlink_task_buf_id];
+int horizonlink_unpack(horizonlink_rx_handle_t *rx_hdl, horizonlink_tlv_set_t *tlv_set) {
+    uint8_t *buf = rx_hdl->rx_buf;
+    int frame_pos = 0;
+    int frame_len = rx_hdl->len;
+    horizonlink_tlv_set_t tlv_set_mask;
+    int nr_tlvs = 0;
 
-    memset(&_horizonlink_tlv_set_mask, 0, sizeof(_horizonlink_tlv_set_mask));
-    _horizonlink_nr_tlvs = 0;
+    // sanity check
+    if (!rx_hdl || !tlv_set) {
+        return 0;
+    }
+
+    memset(&tlv_set_mask, 0, sizeof(tlv_set_mask));
 
     // test
-    for (size_t i = 0; i < frame_len; i++) {
+    for (int i = 0; i < frame_len; i++) {
         if ((i % 0x10) == 0) {
             if (i != 0) {
                 printf("\n");
             }
-            printf("%08lX: ", i);
+            printf("%08X: ", i);
         }
         printf("%02X ", buf[i]);
     }
@@ -338,89 +312,92 @@ int horizonlink_unpack(horizonlink_tlv_set_t *tlv_set) {
     // validate checksum
     if (_horizonlink_validate_checksum(buf, frame_len)) {
         frame_len--; // exclude crc
-        frame_position = _horizonlink_parse_stlv(buf, frame_len, tlv_set);
-        while (frame_position < frame_len) {
-            frame_position += _horizonlink_parse_tlv(buf + frame_position, frame_len - frame_position, tlv_set);
+        frame_pos = _horizonlink_parse_stlv(buf, frame_len, tlv_set,
+                &tlv_set_mask, &nr_tlvs);
+        while (frame_pos < frame_len) {
+            frame_pos += _horizonlink_parse_tlv(buf + frame_pos, frame_len - frame_pos, tlv_set,
+                    &tlv_set_mask, &nr_tlvs);
         }
     } else {
         // test
         printf("bad crc\n");
     }
 
-    // pseudo memory barrier: make a dependency on frame_position
-    if (frame_position <= frame_len) {
-        _horizonlink_task_buf_id = (_horizonlink_task_buf_id != 0) ? 0 : 1;
-    }
-
-    memcpy(tlv_set, &_horizonlink_tlv_set_mask, sizeof(_horizonlink_tlv_set_mask));
-    return _horizonlink_nr_tlvs;
+    memcpy(tlv_set, &tlv_set_mask, sizeof(tlv_set_mask));
+    return nr_tlvs;
 }
 
-size_t horizonlink_disperse(uint8_t *buf, size_t buf_len) {
-    size_t si = 0, di = 0;
+bool horizonlink_disperse(horizonlink_tx_handle_t *tx_hdl, uint8_t *buf, int *buf_len) {
+    int si = 0, di = 0;
 
-    if (buf_len < (_horizonlink_tx_frame_buf_size + 2)) {
-        return 0;
+    // sanity check
+    if (!tx_hdl || !buf || !buf_len) {
+        return false;
+    }
+
+    if (*buf_len < (tx_hdl->len + 2)) {
+        return false;
     }
 
     buf[di++] = _HORIZONLINK_FRAME_MARKER;
 
-    for (; si < _horizonlink_tx_frame_buf_size; si++) {
-        if ((_horizonlink_tx_frame_buf[si] == _HORIZONLINK_FRAME_MARKER)
-            || (_horizonlink_tx_frame_buf[si] == _HORIZONLINK_ESCAPE_CHAR)) {
-            if ((di + 2) >= buf_len) {
-                return 0;
+    for (; si < tx_hdl->len; si++) {
+        if ((tx_hdl->tx_buf[si] == _HORIZONLINK_FRAME_MARKER)
+            || (tx_hdl->tx_buf[si] == _HORIZONLINK_ESCAPE_CHAR)) {
+            if ((di + 2) >= *buf_len) {
+                return false;
             }
             buf[di++] = _HORIZONLINK_ESCAPE_CHAR;
-            buf[di++] = _horizonlink_tx_frame_buf[si] ^ _HORIZONLINK_ESCAPE_MASK;
+            buf[di++] = tx_hdl->tx_buf[si] ^ _HORIZONLINK_ESCAPE_MASK;
         } else {
-            if ((di + 1) >= buf_len) {
-                return 0;
+            if ((di + 1) >= *buf_len) {
+                return false;
             }
-            buf[di++] = _horizonlink_tx_frame_buf[si];
+            buf[di++] = tx_hdl->tx_buf[si];
         }
     }
 
     buf[di++] = _HORIZONLINK_FRAME_MARKER;
+    *buf_len = di;
 
-    return di;
+    return true;
 }
 
 /* ISR ------------------------------------------------------------------------*/
-bool horizonlink_assemble(uint8_t data) {
-    static size_t frame_position = 0;
-    static bool escaped_character = false;
+bool horizonlink_assemble(horizonlink_rx_handle_t *rx_hdl, uint8_t data) {
     bool new_frame_received = false;
 
+    // sanity check
+    if (!rx_hdl) {
+        return false;
+    }
+
     if (_HORIZONLINK_FRAME_MARKER == data) {
-        if (frame_position < (_HORIZONLINK_MIN_FRAME_LEN - 1)) {
+        if (rx_hdl->pos <= _HORIZONLINK_MIN_FRAME_LEN) {
             // Head or under size frame, treat as a new frame
-            frame_position = 1;
+            rx_hdl->pos = 1;
         } else {
             // Tail
-            _horizonlink_rx_buf_size[_horizonlink_isr_buf_id] = frame_position - 1;
-            frame_position = 0;
-            if (_horizonlink_isr_buf_id == _horizonlink_task_buf_id) {
-                _horizonlink_isr_buf_id = (_horizonlink_isr_buf_id != 0) ? 0 : 1;
-                new_frame_received = true;
-            }
+            rx_hdl->len = rx_hdl->pos - 1;
+            rx_hdl->pos = 0;
+            new_frame_received = true;
         }
-        escaped_character = false;
-    } else if (frame_position > 0) {
-        if (frame_position >= (_HORIZONLINK_MAX_FRAME_LEN - 1)) {
+        rx_hdl->esc = false;
+    } else if (rx_hdl->pos > 0) {
+        if (rx_hdl->pos > _HORIZONLINK_MAX_FRAME_LEN) {
             // oversize frame
-            frame_position = 0;
+            rx_hdl->pos = 0;
         } else {
             if (data == _HORIZONLINK_ESCAPE_CHAR) {
                 // XXX 7D+7E?
-                escaped_character = true;
+                rx_hdl->esc = true;
             } else {
-                if (escaped_character) {
+                if (rx_hdl->esc) {
                     data ^= _HORIZONLINK_ESCAPE_MASK;
-                    escaped_character = false;
+                    rx_hdl->esc = false;
                 }
-                _horizonlink_rx_frame_bufs[_horizonlink_isr_buf_id][frame_position - 1] = data;
-                frame_position++;
+                rx_hdl->rx_buf[rx_hdl->pos - 1] = data;
+                rx_hdl->pos++;
             }
         }
     } else {

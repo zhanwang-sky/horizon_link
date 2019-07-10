@@ -1,4 +1,4 @@
-TARGET := a.out
+TARGET := test.out
 
 CC := g++
 CPPFLAGS := -std=c++11 -Wall -Wextra -Wpedantic -g
@@ -13,4 +13,4 @@ $(TARGET): main.cpp
 rebuild: clean all
 all: $(TARGET)
 clean:
-	rm -rf *.o *.out *.dSYM
+	rm -rf *.out *.o *.dSYM
