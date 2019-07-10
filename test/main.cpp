@@ -17,7 +17,7 @@ horizonlink_pid_t att_pid_rx;
 
 horizonlink_tx_handle_t tx_hdl;
 horizonlink_rx_handle_t rx_hdl;
-uint8_t raw_buf[87] = { 0 };
+uint8_t raw_buf[2 * _HORIZONLINK_MAX_FRAME_LEN] = { 0 };
 
 void stuff_quat(horizonlink_quat_t *quat) {
     quat->component[0] = 3.14159;
@@ -38,7 +38,7 @@ bool compare_quat(horizonlink_quat_t *lhs, horizonlink_quat_t *rhs) {
 
 void stuff_sbus(horizonlink_sbus_t *sbus) {
     for (int i = 0; i < 16; i++) {
-        sbus->channel[i] = _HORIZONLINK_FRAME_MARKER * i;
+        sbus->channel[i] = _HORIZONLINK_FRAME_MARKER * (i+1);
     }
     sbus->flags = _HORIZONLINK_FRAME_MARKER;
 }
@@ -191,6 +191,7 @@ int main() {
     if (!ready) {
         goto ERR_EXIT;
     }
+    printf("(%d) %d bytes collected\n", __LINE__, i+1);
     // unpack
     nr_tlvs = horizonlink_unpack(&rx_hdl, &tlv_set_rx);
     printf("(%d) horizonlink_unpack returns %d\n", __LINE__, nr_tlvs);
